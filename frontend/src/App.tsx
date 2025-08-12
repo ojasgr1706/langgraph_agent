@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import './index.css';
 import ThreadList from './components/ThreadList';
 import ChatView from './components/ChatView';
 import InputBar from './components/InputBar';
-import { fetchThreads, fetchState, sendChat, deleteThread } from './api';
+import { fetchThreads, fetchState, deleteThread, streamChat } from './api';
 import type { ChatResponse, Message, ThreadMeta } from './types';
 
 function newThreadId() {
@@ -16,6 +16,7 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+  const assistantIndexRef = useRef<number | null>(null);
 
   // Load thread list on mount
   useEffect(() => {
@@ -40,19 +41,82 @@ export default function App() {
       .finally(() => setLoading(false));
   }, [activeId]);
 
+  // async function handleSend(text: string) {
+  //   if (!activeId) return;
+  //   // Optimistic append of the user message
+  //   setMessages(prev => [...prev, { role: 'user', content: text }]);
+  //   try {
+  //     const res = await sendChat(activeId, text);
+  //     setMessages(res.messages || []);
+  //     // Refresh threads (titles/updated_at may change)
+  //     fetchThreads().then(setThreads).catch(() => {});
+  //   } catch (e) {
+  //     console.error(e);
+  //   }
+  // }
+
   async function handleSend(text: string) {
     if (!activeId) return;
-    // Optimistic append of the user message
-    setMessages(prev => [...prev, { role: 'user', content: text }]);
+  
+    // mark loading (disables the input)
+    setLoading(true);
+  
+    // 1) Append user + an empty assistant bubble, and record the assistant index
+    setMessages(prev => {
+      const next = [...prev, { role: 'user', content: text }, { role: 'assistant', content: '' }];
+      assistantIndexRef.current = next.length - 1; // last item is the assistant bubble
+      return next;
+    });
+  
     try {
-      const res = await sendChat(activeId, text);
-      setMessages(res.messages || []);
-      // Refresh threads (titles/updated_at may change)
-      fetchThreads().then(setThreads).catch(() => {});
+      // 2) Stream tokens
+      for await (const evt of streamChat(activeId, text)) {
+        if (evt.event === 'delta' && evt.data?.content) {
+          // Append token to the live assistant message
+          setMessages(prev => {
+            const idx = assistantIndexRef.current;
+            if (idx == null || idx < 0 || idx >= prev.length) return prev;
+            const next = [...prev];
+            next[idx] = { ...next[idx], content: (next[idx].content || '') + evt.data.content };
+            return next;
+          });
+        } else if (evt.event === 'tool' && evt.data?.content) {
+          // Insert a separate tool bubble (already "tool call: …")
+          const content = evt.data.content.trim();
+          if (content) {
+            setMessages(prev => [...prev, { role: 'tool', content }]);
+          }
+        } else if (evt.event === 'done') {
+          // ---------- "done" branch ----------
+          // Remove the assistant bubble if it stayed empty
+          setMessages(prev => {
+            const idx = assistantIndexRef.current;
+            if (idx == null || idx < 0 || idx >= prev.length) return prev;
+            if (!prev[idx].content || !prev[idx].content.trim()) {
+              const next = [...prev];
+              next.splice(idx, 1);
+              return next;
+            }
+            return prev;
+          });
+  
+          // Optionally refresh threads (title/updated_at)
+          fetchThreads().then(setThreads).catch(() => {});
+  
+          // Optionally hard-sync from /state:
+          // const res = await fetchState(activeId); setMessages(res.messages || []);
+        } else if (evt.event === 'error') {
+          console.error('stream error', evt.data?.message);
+        }
+      }
     } catch (e) {
       console.error(e);
+    } finally {
+      assistantIndexRef.current = null;
+      setLoading(false);
     }
   }
+  
 
   function handleSelect(t: ThreadMeta) {
     setActiveId(t.thread_id);

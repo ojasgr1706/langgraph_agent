@@ -1,5 +1,6 @@
 # app/server.py
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
@@ -122,6 +123,75 @@ def _get_messages_for_thread(thread_id: str) -> List[Dict[str, Any]]:
     except Exception:
         return []
 
+def _sse(event: str, data: Dict[str, Any]) -> bytes:
+    """Pack one SSE event."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+
+@app.get("/chat/stream")
+def chat_stream(
+    thread_id: str = Query(...),
+    user: str = Query(...),
+):
+    """
+    SSE endpoint (GET for simplicity). Streams assistant/tool tokens live.
+    Events:
+      - 'delta'  -> partial assistant text
+      - 'tool'   -> single tool call line (already prefixed 'tool call: ...')
+      - 'done'   -> end of turn (client can refresh threads if needed)
+    """
+
+    # Optional: keep your touch/upsert so thread is visible immediately
+    try:
+        touch_thread(thread_id, user)  # if you added this earlier
+    except Exception:
+        pass
+
+    config = {"configurable": {"thread_id": thread_id}}
+
+    def gen():
+        # Emit the user's own message first (optional; UI already does optimistic insert)
+        # yield _sse("user", {"role": "user", "content": user})
+
+        try:
+            # Stream LangGraph tokens
+            for token, meta in graph.stream(
+                {"messages": [{"role": "user", "content": user}]},
+                config,
+                stream_mode="messages",
+            ):
+                node = meta.get("langgraph_node")
+
+                if node == "tools":
+                    # Tool output: extract query and prefix
+                    content = token.content
+                    name = getattr(token, "name", None)
+                    # Try parse JSON and pull "query"
+                    text = None
+                    try:
+                        parsed = json.loads(content) if isinstance(content, str) else content
+                        if isinstance(parsed, dict) and parsed.get("query"):
+                            text = f"tool call: {parsed['query']}"
+                    except Exception:
+                        pass
+                    if not text:
+                        text = f"tool call: {content}"
+                    text = text.strip()
+                    if text:
+                        yield _sse("tool", {"role": "tool", "name": name or "tool", "content": text})
+                else:
+                    # Assistant token delta
+                    text = token.content or ""
+                    if text.strip():
+                        yield _sse("delta", {"role": "assistant", "content": text})
+
+            # End of turn
+            yield _sse("done", {"ok": True})
+
+        except Exception as e:
+            # Send an error event then close
+            yield _sse("error", {"message": str(e)})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 # ---------- Routes ----------
