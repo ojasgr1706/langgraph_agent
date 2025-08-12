@@ -12,3 +12,4 @@
 ## Notes
 - Uses TavilySearch via `langchain_tavily` and an LLM via `langchain-openai`.
 - Streams tokens and tool outputs; nicely formatted via `rich`.
+- More features like OCR, calendar and file io.
