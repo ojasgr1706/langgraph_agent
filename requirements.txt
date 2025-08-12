@@ -1,0 +1,9 @@
+langgraph
+langchain
+langchain-openai
+langchain-tavily
+python-dotenv
+langgraph-checkpoint-mongodb
+fastapi
+uvicorn
+pydantic>=2.0.0,<3.0.0

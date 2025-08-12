@@ -1,0 +1,4 @@
+I want a different color scheme for the chatbot. Right now, the text background and text are both too light to be seen, in nearly all places.
+the user input window is too much at the bottom, and is too thin, make it bigger, with the Go button,
+when I press the new chat button, a new chat appears, but when I type my first message, it doesn't change it's name, but rather disappears from the side pane, why could this be happening? Let's go over this problem in depth, coz this may have to do with the backend.
+After all this, I also want there to be a delete chat button next to the chats listed in the side pane, which deletes that thread_id.
