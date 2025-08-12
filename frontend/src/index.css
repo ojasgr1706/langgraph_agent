@@ -71,6 +71,14 @@ html, body, #root { height: 100%; margin: 0; font-family: ui-sans-serif, system-
 }
 .msg.system { align-self:center; background:#f1f1f1; border:1px dashed #ddd; font-size:13px; opacity:0.9; }
 
+.msg.tool {
+  align-self: flex-start;
+  background: #fff3cd; /* light yellow background */
+  color: #856404; /* dark yellow text */
+  border: 1px solid #ffeeba;
+  font-family: monospace;
+  white-space: pre-wrap;
+}
 .input-bar {
   display: flex;
   gap: 12px;

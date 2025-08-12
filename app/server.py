@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
+import json
 
 from app.graph.builder import build_graph, cleanup_mongo
 from app.threads.registry import delete_thread_by_id, list_threads, get_thread, touch_thread, delete_thread_by_id
@@ -40,35 +41,88 @@ def _config_for(thread_id: str) -> Dict[str, Any]:
 
 def _get_messages_for_thread(thread_id: str) -> List[Dict[str, Any]]:
     """
-    Fetch LangGraph's message history for a given thread via the checkpointer.
+    Fetch LangGraph's message history for a given thread via the checkpointer,
+    normalize roles, format tool messages, and SKIP empty contents.
     """
     try:
         state = graph.get_state(_config_for(thread_id))
-        # LangGraph State stores messages under state.values["messages"]
         msgs = state.values.get("messages", [])
-        # Make sure these are plain dicts for JSON (LangChain messages can be BaseMessages)
         norm = []
+
+        def _is_nonempty_text(x) -> bool:
+            # Treat only non-empty, non-whitespace strings as renderable.
+            return isinstance(x, str) and x.strip() != ""
+
         for m in msgs:
-            # Many LangChain messages expose .type/.content/.name/.id; fallback to dict
             if hasattr(m, "type") and hasattr(m, "content"):
-                md = {"role": getattr(m, "type", None), "content": getattr(m, "content", None)}
-                # 'ai' -> 'assistant' for frontend clarity
-                if md["role"] == "ai":
-                    md["role"] = "assistant"
-                elif md["role"] == "human":
-                    md["role"] = "user"
-                # include tool message names if present
-                if hasattr(m, "name") and getattr(m, "name"):
-                    md["name"] = getattr(m, "name")
+                role = getattr(m, "type", None)
+                content = getattr(m, "content", None)
+                name = getattr(m, "name", None) if hasattr(m, "name") else None
+
+                # map roles
+                if role == "ai":
+                    role = "assistant"
+                elif role == "human":
+                    role = "user"
+
+                # tool handling → "tool call: <query or raw>"
+                if name:
+                    role = "tool"
+                    try:
+                        parsed = json.loads(content) if isinstance(content, str) else content
+                        if isinstance(parsed, dict) and "query" in parsed:
+                            content = f"tool call: {parsed['query']}"
+                        else:
+                            content = f"tool call: {content}"
+                    except Exception:
+                        content = f"tool call: {content}"
+
+                # SKIP empties
+                if not _is_nonempty_text(content):
+                    continue
+
+                md = {"role": role, "content": content}
+                if name:
+                    md["name"] = name
                 norm.append(md)
+
             elif isinstance(m, dict):
-                norm.append(m)
+                role = m.get("role")
+                content = m.get("content")
+
+                # mark tools if name present, and add "tool call: ..."
+                if "name" in m and m.get("name"):
+                    role = "tool"
+                    try:
+                        parsed = json.loads(content) if isinstance(content, str) else content
+                        if isinstance(parsed, dict) and "query" in parsed:
+                            content = f"tool call: {parsed['query']}"
+                        else:
+                            content = f"tool call: {content}"
+                    except Exception:
+                        content = f"tool call: {content}"
+
+                # SKIP empties
+                if not _is_nonempty_text(content):
+                    continue
+
+                out = dict(m)
+                out["role"] = role
+                out["content"] = content
+                norm.append(out)
+
             else:
-                norm.append({"role": "unknown", "content": str(m)})
+                # fallback → skip if empty after str()
+                text = str(m)
+                if text.strip():
+                    norm.append({"role": "unknown", "content": text})
+
         return norm
-    except Exception as e:
-        # If state for thread doesn't exist yet, return empty list
+
+    except Exception:
         return []
+
+
 
 # ---------- Routes ----------
 @app.get("/health")
@@ -111,8 +165,8 @@ def delete_thread(thread_id: str):
     deleted = delete_thread_by_id(thread_id)
 
     # If you want to signal nonexistence:
-    # if not deleted:
-    #     raise HTTPException(status_code=404, detail="Thread not found")
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Thread not found")
 
     # Keep it simple: always 204
     return {"ok": True}
