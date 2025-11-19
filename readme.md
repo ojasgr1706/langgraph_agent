@@ -2,7 +2,7 @@
 
 A conversational AI agent built with LangGraph that combines web search (Tavily) and calculator tools with an LLM for intelligent task execution.
 
-![Frontend Interface](images/app_image.png)
+![Frontend Interface](images/websearch_demo.png)
 
 ## Setup
 1) `python -m venv .venv && source .venv/bin/activate`
